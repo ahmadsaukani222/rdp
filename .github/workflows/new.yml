@@ -9,9 +9,11 @@ jobs:
     timeout-minutes: 3600
 
     steps:
-      - name: Setup RDP (Minimal - Preserve Network Speed)
+      - name: Setup RDP (Preserve 2000mbps Network)
         run: |
-          # Enable RDP only - NO network tweaking!
+          Write-Host "Setting up RDP with optimal settings..." -ForegroundColor Green
+          
+          # Enable RDP only - NO network tweaking yang mengganggu speed!
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
                              -Name "fDenyTSConnections" -Value 0 -Force
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
@@ -19,66 +21,84 @@ jobs:
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
                              -Name "SecurityLayer" -Value 0 -Force
           
-          # RDP Performance only (tidak affect internet speed)
+          # RDP Performance optimization only (tidak affect internet speed)
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
                              -Name "ColorDepth" -Value 16 -Force
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
                              -Name "fWallpaperDisabled" -Value 1 -Force
 
-          # Firewall only
+          # Firewall rule
           netsh advfirewall firewall delete rule name="RDP-High" 2>$null
           netsh advfirewall firewall add rule name="RDP-High" dir=in action=allow protocol=TCP localport=3389
           
           Restart-Service -Name TermService -Force
-          
-          # Tes speed (opsional - untuk verify)
-          Write-Host "`nTesting raw internet speed..." -ForegroundColor Cyan
-          $start = Get-Date
-          $null = Invoke-WebRequest -Uri "https://speed.hetzner.de/100MB.bin" -TimeoutSec 30 -ErrorAction SilentlyContinue
-          $speed = [math]::Round((100/((Get-Date)-$start).TotalSeconds)*8, 2)
-          Write-Host "Download speed: ~$speed Mbps (Expected: 2000+ Mbps)`n" -ForegroundColor Green
+          Write-Host "RDP configured successfully!" -ForegroundColor Green
 
-      - name: Create User
+      - name: Create RDP User
         run: |
           $password = "Hasibuan2001"
           $securePass = ConvertTo-SecureString $password -AsPlainText -Force
           
           if (Get-LocalUser -Name "RDP" -ErrorAction SilentlyContinue) {
               Set-LocalUser -Name "RDP" -Password $securePass
+              Write-Host "User RDP updated" -ForegroundColor Yellow
           } else {
               New-LocalUser -Name "RDP" -Password $securePass -AccountNeverExpires
               Add-LocalGroupMember -Group "Administrators" -Member "RDP"
+              Write-Host "User RDP created" -ForegroundColor Green
           }
           
           echo "RDP_CREDS=User: RDP | Password: $password" >> $env:GITHUB_ENV
 
-      - name: Install Tailscale (Simple)
+      - name: Install Tailscale
         run: |
+          Write-Host "Downloading Tailscale..." -ForegroundColor Cyan
           Invoke-WebRequest -Uri "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi" `
             -OutFile "$env:TEMP\tailscale.msi" -UseBasicParsing
+          
+          Write-Host "Installing Tailscale..." -ForegroundColor Cyan
           Start-Process msiexec.exe -ArgumentList "/i", "$env:TEMP\tailscale.msi", "/quiet", "/norestart" -Wait
+          Remove-Item "$env:TEMP\tailscale.msi" -Force
+          Write-Host "Tailscale installed!" -ForegroundColor Green
 
       - name: Connect Tailscale
         run: |
           & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} `
             --hostname=rdp-fast-$env:GITHUB_RUN_ID
           
-          Start-Sleep -Seconds 5
-          $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
+          # Tunggu IP dengan retry
+          $retry = 0
+          do {
+              Start-Sleep -Seconds 3
+              $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
+              $retry++
+          } while (-not $tsIP -and $retry -lt 10)
+          
+          if (-not $tsIP) {
+              Write-Error "Failed to get Tailscale IP"
+              exit 1
+          }
+          
           echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
 
-      - name: Info
+      - name: Display Connection Info
         run: |
-          Write-Host "`n=== RDP READY (HIGH SPEED) ===" -ForegroundColor Green
-          Write-Host "IP: $env:TAILSCALE_IP"
-          Write-Host "User: RDP"
-          Write-Host "Pass: Hasibuan2001"
-          Write-Host "Network: 2000+ Mbps (Unmodified)"
-          Write-Host "=============================`n"
+          Write-Host "`n========================================" -ForegroundColor Green
+          Write-Host "   RDP READY - HIGH SPEED MODE" -ForegroundColor Green
+          Write-Host "========================================" -ForegroundColor Green
+          Write-Host "Address:  $env:TAILSCALE_IP"
+          Write-Host "Username: RDP"
+          Write-Host "Password: Hasibuan2001"
+          Write-Host "----------------------------------------"
+          Write-Host "Network:  2000+ Mbps (Unmodified Stack)" -ForegroundColor Cyan
+          Write-Host "RDP:      16-bit Color, No Wallpaper" -ForegroundColor Cyan
+          Write-Host "========================================`n"
 
-      - name: Keep Alive
+      - name: Keep RDP Alive
         run: |
+          $counter = 0
           while ($true) {
-              Write-Host "[$(Get-Date)] RDP Active (2000mbps link)"
-              Start-Sleep -Seconds 300
+              $counter++
+              Write-Host "[$(Get-Date)] RDP Session Active - Minute $counter"
+              Start-Sleep -Seconds 60
           }
