@@ -1,0 +1,84 @@
+name: RDP-HighSpeed
+
+on:
+  workflow_dispatch:
+
+jobs:
+  highspeed-rdp:
+    runs-on: windows-latest
+    timeout-minutes: 3600
+
+    steps:
+      - name: Setup RDP (Minimal - Preserve Network Speed)
+        run: |
+          # Enable RDP only - NO network tweaking!
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
+                             -Name "fDenyTSConnections" -Value 0 -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
+                             -Name "UserAuthentication" -Value 0 -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
+                             -Name "SecurityLayer" -Value 0 -Force
+          
+          # RDP Performance only (tidak affect internet speed)
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
+                             -Name "ColorDepth" -Value 16 -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
+                             -Name "fWallpaperDisabled" -Value 1 -Force
+
+          # Firewall only
+          netsh advfirewall firewall delete rule name="RDP-High" 2>$null
+          netsh advfirewall firewall add rule name="RDP-High" dir=in action=allow protocol=TCP localport=3389
+          
+          Restart-Service -Name TermService -Force
+          
+          # Tes speed (opsional - untuk verify)
+          Write-Host "`nTesting raw internet speed..." -ForegroundColor Cyan
+          $start = Get-Date
+          $null = Invoke-WebRequest -Uri "https://speed.hetzner.de/100MB.bin" -TimeoutSec 30 -ErrorAction SilentlyContinue
+          $speed = [math]::Round((100/((Get-Date)-$start).TotalSeconds)*8, 2)
+          Write-Host "Download speed: ~$speed Mbps (Expected: 2000+ Mbps)`n" -ForegroundColor Green
+
+      - name: Create User
+        run: |
+          $password = "Hasibuan2001"
+          $securePass = ConvertTo-SecureString $password -AsPlainText -Force
+          
+          if (Get-LocalUser -Name "RDP" -ErrorAction SilentlyContinue) {
+              Set-LocalUser -Name "RDP" -Password $securePass
+          } else {
+              New-LocalUser -Name "RDP" -Password $securePass -AccountNeverExpires
+              Add-LocalGroupMember -Group "Administrators" -Member "RDP"
+          }
+          
+          echo "RDP_CREDS=User: RDP | Password: $password" >> $env:GITHUB_ENV
+
+      - name: Install Tailscale (Simple)
+        run: |
+          Invoke-WebRequest -Uri "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi" `
+            -OutFile "$env:TEMP\tailscale.msi" -UseBasicParsing
+          Start-Process msiexec.exe -ArgumentList "/i", "$env:TEMP\tailscale.msi", "/quiet", "/norestart" -Wait
+
+      - name: Connect Tailscale
+        run: |
+          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} `
+            --hostname=rdp-fast-$env:GITHUB_RUN_ID
+          
+          Start-Sleep -Seconds 5
+          $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
+          echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
+
+      - name: Info
+        run: |
+          Write-Host "`n=== RDP READY (HIGH SPEED) ===" -ForegroundColor Green
+          Write-Host "IP: $env:TAILSCALE_IP"
+          Write-Host "User: RDP"
+          Write-Host "Pass: Hasibuan2001"
+          Write-Host "Network: 2000+ Mbps (Unmodified)"
+          Write-Host "=============================`n"
+
+      - name: Keep Alive
+        run: |
+          while ($true) {
+              Write-Host "[$(Get-Date)] RDP Active (2000mbps link)"
+              Start-Sleep -Seconds 300
+          }
